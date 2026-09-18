@@ -1,6 +1,6 @@
 {
   "name": "orbit-desktop",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "A local-first personal workspace powered by the Codex CLI",
   "main": "./out/main/index.js",
   "author": "Anthony Saliba",
@@ -74,7 +74,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
