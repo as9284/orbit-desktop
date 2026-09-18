@@ -3,6 +3,7 @@ import {
   useRef,
   useCallback,
   useEffect,
+  useMemo,
   type FormEvent,
   type KeyboardEvent,
 } from "react";
@@ -14,8 +15,10 @@ import {
 } from "../lib/luna-tool-batch";
 import {
   Send,
-  Trash2,
   Square,
+  Plus,
+  Trash2,
+  MessagesSquare,
   LoaderCircle,
   User as UserIcon,
   CheckCircle2,
@@ -30,15 +33,15 @@ import {
   FolderOpen,
   Unlink,
   ListChecks,
+  AlertTriangle,
 } from "lucide-react";
-import { useTasksApi, useNotesApi } from "../components/layout/AppLayout";
-import { useApp } from "../contexts/AppContext";
 import {
-  getLunaChat,
-  setLunaChat,
-  setTaskCategories,
-  setNoteCategories,
-} from "../lib/storage/db";
+  useTasksApi,
+  useNotesApi,
+  useLunaChatsApi,
+} from "../components/layout/AppLayout";
+import { useApp } from "../contexts/AppContext";
+import { setTaskCategories, setNoteCategories } from "../lib/storage/db";
 import { getLunaSnapshot } from "../lib/storage/luna-snapshot";
 import { useMeetingSessions } from "../hooks/useMeetingSessions";
 import { useProjects } from "../hooks/useProjects";
@@ -53,28 +56,20 @@ import {
   streamLunaChat,
   processWriting,
   type ChatMessage,
-  type CacheInfo,
   type WritingMode,
 } from "../lib/ai-client";
 import { renderMarkdown } from "../lib/markdown";
 import { Button } from "../components/ui/Button";
 import { CrescentIcon } from "../components/ui/CosmicIcons";
 import { ScrollArea } from "../components/ui/ScrollArea";
+import { ChatSessionsModal } from "../components/luna/ChatSessionsModal";
+import type { LunaMessage } from "../types/orbit";
 
-interface UIMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  reasoning?: string;
-  thinkingFallback?: boolean;
-  pending?: boolean;
-  toolResults?: ToolResult[];
-  cacheInfo?: CacheInfo;
-}
+/** The persisted message shape is the rendered one; see types/orbit.ts. */
+type UIMessage = LunaMessage;
 
-let msgId = 0;
 function nextId() {
-  return `msg-${++msgId}-${Date.now()}`;
+  return `msg-${crypto.randomUUID()}`;
 }
 
 export function LunaPage() {
@@ -91,62 +86,26 @@ export function LunaPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const [messages, setMessages] = useState<UIMessage[]>([]);
-  const [chatLoaded, setChatLoaded] = useState(false);
+  // Chats live in AppLayout, which stays mounted across route changes, so a
+  // turn in flight survives switching tabs. This page only renders them.
+  const lunaChats = useLunaChatsApi();
+  const chatLoaded = lunaChats.loaded;
+  const sessionId = lunaChats.activeSessionId;
+  const activeChat = lunaChats.activeSession;
+  const messages: UIMessage[] = useMemo(
+    () => activeChat?.messages ?? [],
+    [activeChat],
+  );
+  const streaming = lunaChats.isStreaming(sessionId);
+  const otherStreamingCount = lunaChats.streamingIds.filter(
+    (id) => id !== sessionId,
+  ).length;
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        const stored = await getLunaChat();
-        const parsed = stored as unknown as UIMessage[];
-        for (const m of parsed) {
-          const match = m.id?.match(/^msg-(\d+)-/);
-          if (match) msgId = Math.max(msgId, parseInt(match[1], 10));
-        }
-        setMessages(parsed.map((m) => ({ ...m, pending: false })));
-      } catch {
-        setMessages([]);
-      } finally {
-        setChatLoaded(true);
-      }
-    })();
-  }, []);
   const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState(false);
   const [thinkingMode] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-  const activeAssistantMessageIdRef = useRef<string | null>(null);
-  const activeAssistantHasOutputRef = useRef(false);
-  const thinkingFallbackRef = useRef(false);
-  const toolBatchMessageIdRef = useRef<string | null>(null);
-  const notifyBatchScopeRef = useRef<string | null>(null);
+  const [chatsOpen, setChatsOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    if (!chatLoaded || messages.some((m) => m.pending)) return;
-    void setLunaChat(messages);
-  }, [messages, chatLoaded]);
-
-  useEffect(() => {
-    const reloadChat = () => {
-      void (async () => {
-        try {
-          const stored = await getLunaChat();
-          const parsed = stored as UIMessage[];
-          for (const m of parsed) {
-            const match = m.id?.match(/^msg-(\d+)-/);
-            if (match) msgId = Math.max(msgId, parseInt(match[1], 10));
-          }
-          setMessages(parsed.map((m) => ({ ...m, pending: false })));
-        } catch {
-          setMessages([]);
-        }
-      })();
-    };
-    window.addEventListener("orbit:data:changed", reloadChat);
-    return () => window.removeEventListener("orbit:data:changed", reloadChat);
-  }, []);
 
   // Re-render when AI settings change
   const [, setAiTick] = useState(0);
@@ -175,102 +134,6 @@ export function LunaPage() {
     requestAnimationFrame(() => {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     });
-  }, []);
-
-  const ensureActiveAssistantMessage = useCallback(() => {
-    if (activeAssistantMessageIdRef.current) {
-      return activeAssistantMessageIdRef.current;
-    }
-
-    const id = nextId();
-    activeAssistantMessageIdRef.current = id;
-    activeAssistantHasOutputRef.current = false;
-    setMessages((prev) => [
-      ...prev,
-      {
-        id,
-        role: "assistant",
-        content: "",
-        thinkingFallback: thinkingFallbackRef.current,
-        pending: true,
-      },
-    ]);
-    return id;
-  }, []);
-
-  const ensureToolBatch = useCallback(() => {
-    if (toolBatchMessageIdRef.current) return toolBatchMessageIdRef.current;
-    const id = nextId();
-    toolBatchMessageIdRef.current = id;
-    setMessages((prev) => [
-      ...prev,
-      {
-        id,
-        role: "assistant",
-        content: "",
-        toolResults: [],
-      },
-    ]);
-    scrollToBottom();
-    return id;
-  }, [scrollToBottom]);
-
-  const appendToolPending = useCallback(
-    (tool: string, label: string) => {
-      ensureToolBatch();
-      setMessages((prev) =>
-        prev.map((message) =>
-          message.id === toolBatchMessageIdRef.current
-            ? {
-                ...message,
-                toolResults: [
-                  ...(message.toolResults ?? []),
-                  { tool, status: "pending" as const, label },
-                ],
-              }
-            : message,
-        ),
-      );
-      scrollToBottom();
-    },
-    [ensureToolBatch, scrollToBottom],
-  );
-
-  const resolveLastTool = useCallback(
-    (result: ToolResult) => {
-      const batchId = toolBatchMessageIdRef.current;
-      if (!batchId) return;
-      setMessages((prev) =>
-        prev.map((message) => {
-          if (message.id !== batchId) return message;
-          const results = [...(message.toolResults ?? [])];
-          if (results.length > 0) results[results.length - 1] = result;
-          return { ...message, toolResults: results };
-        }),
-      );
-      scrollToBottom();
-    },
-    [scrollToBottom],
-  );
-
-  const lunaNotifyAction = useCallback(
-    (action: string, subject: string | undefined, ok: boolean) => {
-      notify(
-        buildLunaNotifyEvent(
-          action,
-          subject,
-          ok,
-          notifyBatchScopeRef.current,
-        ),
-      );
-    },
-    [],
-  );
-
-  const finalizeLunaTurn = useCallback(() => {
-    flushNotifyGroup(notifyBatchScopeRef.current);
-    toolBatchMessageIdRef.current = null;
-    notifyBatchScopeRef.current = null;
   }, []);
 
   const waitForNextPaint = useCallback(
@@ -308,8 +171,99 @@ export function LunaPage() {
         return;
       }
 
-      notifyBatchScopeRef.current = `luna-turn-${nextId()}`;
-      toolBatchMessageIdRef.current = null;
+      // Pin the turn to a session up front. Everything below writes through
+      // this id, so navigating away, or switching to another chat, cannot
+      // redirect the reply into whatever chat happens to be on screen later.
+      const turnSessionId = lunaChats.ensureActiveSession().id;
+      const runtime = lunaChats.beginTurn(turnSessionId);
+
+      /** Session-bound, so the inner turn code reads exactly as before. */
+      const setMessages = (
+        updater: (prev: UIMessage[]) => UIMessage[],
+      ): void => {
+        lunaChats.setMessages(turnSessionId, updater);
+      };
+
+      const ensureActiveAssistantMessage = (): string => {
+        if (runtime.assistantMessageId) return runtime.assistantMessageId;
+        const id = nextId();
+        runtime.assistantMessageId = id;
+        runtime.assistantHasOutput = false;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id,
+            role: "assistant",
+            content: "",
+            thinkingFallback: runtime.thinkingFallback,
+            pending: true,
+          },
+        ]);
+        lunaChats.markTurnMessage(turnSessionId, id);
+        return id;
+      };
+
+      const ensureToolBatch = (): string => {
+        if (runtime.toolBatchMessageId) return runtime.toolBatchMessageId;
+        const id = nextId();
+        runtime.toolBatchMessageId = id;
+        setMessages((prev) => [
+          ...prev,
+          { id, role: "assistant", content: "", toolResults: [] },
+        ]);
+        scrollToBottom();
+        return id;
+      };
+
+      const appendToolPending = (tool: string, label: string): void => {
+        ensureToolBatch();
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === runtime.toolBatchMessageId
+              ? {
+                  ...message,
+                  toolResults: [
+                    ...(message.toolResults ?? []),
+                    { tool, status: "pending" as const, label },
+                  ],
+                }
+              : message,
+          ),
+        );
+        scrollToBottom();
+      };
+
+      const resolveLastTool = (result: ToolResult): void => {
+        const batchId = runtime.toolBatchMessageId;
+        if (!batchId) return;
+        setMessages((prev) =>
+          prev.map((message) => {
+            if (message.id !== batchId) return message;
+            const results = [...(message.toolResults ?? [])];
+            if (results.length > 0) results[results.length - 1] = result;
+            return { ...message, toolResults: results };
+          }),
+        );
+        scrollToBottom();
+      };
+
+      const lunaNotifyAction = (
+        action: string,
+        subject: string | undefined,
+        ok: boolean,
+      ): void => {
+        notify(buildLunaNotifyEvent(action, subject, ok, runtime.notifyScope));
+      };
+
+      const finalizeLunaTurn = (): void => {
+        flushNotifyGroup(runtime.notifyScope);
+        runtime.toolBatchMessageId = null;
+        runtime.notifyScope = null;
+        lunaChats.endTurn(turnSessionId);
+        lunaChats.maybeGenerateTitle(turnSessionId);
+      };
+
+      runtime.notifyScope = `luna-turn-${nextId()}`;
 
       const userMsg: UIMessage = {
         id: nextId(),
@@ -324,13 +278,11 @@ export function LunaPage() {
         pending: true,
       };
 
-      activeAssistantMessageIdRef.current = assistantMsg.id;
-      activeAssistantHasOutputRef.current = false;
-      thinkingFallbackRef.current = false;
+      runtime.assistantMessageId = assistantMsg.id;
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      lunaChats.markTurnMessage(turnSessionId, assistantMsg.id);
       setInput("");
-      setStreaming(true);
 
       // Build conversation history for the API
       // Fetch sub-tasks for active tasks so Luna sees the full picture
@@ -396,7 +348,8 @@ export function LunaPage() {
           }),
         },
         // Include previous conversation (excluding pending/tool metadata)
-        ...messages
+        ...lunaChats
+          .getMessages(turnSessionId)
           .filter((m) => m.content.trim())
           .map((m) => ({
             role: m.role as "user" | "assistant",
@@ -405,8 +358,6 @@ export function LunaPage() {
         { role: "user" as const, content: text },
       ];
 
-      const controller = new AbortController();
-      abortRef.current = controller;
 
       const shouldThink = thinkingMode && activeModelSupportsThinking();
 
@@ -417,7 +368,7 @@ export function LunaPage() {
           {
           onToken: (token) => {
             const activeId = ensureActiveAssistantMessage();
-            activeAssistantHasOutputRef.current = true;
+            runtime.assistantHasOutput = true;
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === activeId ? { ...m, content: m.content + token } : m,
@@ -427,7 +378,7 @@ export function LunaPage() {
           },
           onReasoningToken: (token) => {
             const activeId = ensureActiveAssistantMessage();
-            activeAssistantHasOutputRef.current = true;
+            runtime.assistantHasOutput = true;
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === activeId
@@ -445,7 +396,7 @@ export function LunaPage() {
             );
           },
           onThinkingFallback: () => {
-            thinkingFallbackRef.current = true;
+            runtime.thinkingFallback = true;
             const activeId = ensureActiveAssistantMessage();
             setMessages((prev) =>
               prev.map((m) =>
@@ -1201,7 +1152,7 @@ export function LunaPage() {
             return "Unknown tool";
           },
           onDone: (fullText, reasoning) => {
-            const activeId = activeAssistantMessageIdRef.current;
+            const activeId = runtime.assistantMessageId;
             if (activeId) {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -1216,16 +1167,14 @@ export function LunaPage() {
                 ),
               );
             }
-            activeAssistantMessageIdRef.current = null;
-            activeAssistantHasOutputRef.current = false;
-            thinkingFallbackRef.current = false;
+            runtime.assistantMessageId = null;
+            runtime.assistantHasOutput = false;
+            runtime.thinkingFallback = false;
             finalizeLunaTurn();
-            setStreaming(false);
-            abortRef.current = null;
             scrollToBottom();
           },
           onError: (error) => {
-            const activeId = activeAssistantMessageIdRef.current;
+            const activeId = runtime.assistantMessageId;
             if (activeId) {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -1248,18 +1197,16 @@ export function LunaPage() {
                 },
               ]);
             }
-            activeAssistantMessageIdRef.current = null;
-            activeAssistantHasOutputRef.current = false;
-            thinkingFallbackRef.current = false;
+            runtime.assistantMessageId = null;
+            runtime.assistantHasOutput = false;
+            runtime.thinkingFallback = false;
             finalizeLunaTurn();
-            setStreaming(false);
-            abortRef.current = null;
           },
         },
-        controller.signal,
+        runtime.controller.signal,
         {
           ...(shouldThink ? { thinkingEnabled: true } : {}),
-          sessionId: notifyBatchScopeRef.current ?? undefined,
+          sessionId: runtime.notifyScope ?? undefined,
         },
         );
       } catch (error) {
@@ -1278,20 +1225,16 @@ export function LunaPage() {
             },
           ]);
         }
-        activeAssistantMessageIdRef.current = null;
-        activeAssistantHasOutputRef.current = false;
-        thinkingFallbackRef.current = false;
+        runtime.assistantMessageId = null;
+        runtime.assistantHasOutput = false;
+        runtime.thinkingFallback = false;
         finalizeLunaTurn();
-        setStreaming(false);
-        abortRef.current = null;
       }
     },
     [
-      appendToolPending,
-      ensureActiveAssistantMessage,
       input,
       streaming,
-      messages,
+      lunaChats,
       tasksApi,
       notesApi,
       projectsApi,
@@ -1301,32 +1244,25 @@ export function LunaPage() {
       userName,
       scrollToBottom,
       thinkingMode,
-      resolveLastTool,
-      lunaNotifyAction,
-      finalizeLunaTurn,
       waitForNextPaint,
     ],
   );
 
   const handleStop = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    activeAssistantMessageIdRef.current = null;
-    activeAssistantHasOutputRef.current = false;
-    thinkingFallbackRef.current = false;
-    finalizeLunaTurn();
-    setStreaming(false);
-    setMessages((prev) =>
-      prev.map((m) => (m.pending ? { ...m, pending: false } : m)),
-    );
-  }, [finalizeLunaTurn]);
+    if (!sessionId) return;
+    // Aborting rejects the stream promise, whose catch runs finalizeLunaTurn
+    // and clears the runtime; stopTurn also clears it, and both are safe twice.
+    lunaChats.stopTurn(sessionId);
+    lunaChats.maybeGenerateTitle(sessionId);
+  }, [lunaChats, sessionId]);
 
-  const handleClear = useCallback(() => {
-    if (streaming) handleStop();
-    setMessages([]);
-    void setLunaChat([]);
+  const handleNewChat = useCallback(() => {
+    // Deliberately does not stop anything: an in-flight turn keeps running in
+    // its own chat and its reply lands there.
+    lunaChats.createSession();
+    setInput("");
     inputRef.current?.focus();
-  }, [streaming, handleStop]);
+  }, [lunaChats]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1350,23 +1286,41 @@ export function LunaPage() {
           <CrescentIcon size={17} active className="text-accent-text" />
         </div>
         <div className="flex-1 min-w-0">
-          <h1 className="text-sm font-bold font-display text-text-primary tracking-tight">
-            Luna
+          <h1 className="truncate text-sm font-bold font-display text-text-primary tracking-tight">
+            {activeChat && messages.length > 0 ? activeChat.title : "Luna"}
           </h1>
-          <p className="text-[10px] text-text-faint">Your Orbit AI assistant</p>
+          <p className="text-[10px] text-text-faint">
+            {otherStreamingCount > 0
+              ? `Replying in ${otherStreamingCount} other chat${otherStreamingCount === 1 ? "" : "s"}`
+              : "Your Orbit AI assistant"}
+          </p>
         </div>
-        {messages.length > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleClear}
-            className="gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px]"
-            aria-label="Clear chat"
-          >
-            <Trash2 size={12} />
-            Clear
-          </Button>
-        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setChatsOpen(true)}
+          className="gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px]"
+          aria-label="Browse chats"
+        >
+          <MessagesSquare size={12} />
+          Chats
+          {lunaChats.savedSessions.length > 0 && (
+            <span className="tabular-nums text-text-faint">
+              {lunaChats.savedSessions.length}
+            </span>
+          )}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleNewChat}
+          disabled={messages.length === 0}
+          className="gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px]"
+          aria-label="New chat"
+        >
+          <Plus size={12} />
+          New
+        </Button>
       </header>
 
       {/* Messages area */}
@@ -1375,7 +1329,9 @@ export function LunaPage() {
         viewportClassName="overscroll-contain"
         contentClassName={messages.length === 0 ? "h-full" : undefined}
       >
-        {messages.length === 0 ? (
+        {!chatLoaded ? (
+          <div className="h-full" />
+        ) : messages.length === 0 ? (
           <EmptyChat
             hasKey={hasKey}
             onSuggestion={(text) => {
@@ -1443,6 +1399,18 @@ export function LunaPage() {
           </div>
         </form>
       </div>
+
+      <ChatSessionsModal
+        open={chatsOpen}
+        onClose={() => setChatsOpen(false)}
+        sessions={lunaChats.savedSessions}
+        activeSessionId={sessionId}
+        streamingIds={lunaChats.streamingIds}
+        onSelect={lunaChats.selectSession}
+        onDelete={lunaChats.removeSession}
+        onRename={lunaChats.renameSession}
+        onNewChat={handleNewChat}
+      />
     </div>
   );
 }
@@ -1583,6 +1551,15 @@ function MessageBubble({ message }: { message: UIMessage }) {
             <span className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/15 bg-amber-500/7 px-3 py-1.5 text-[11px] font-medium text-amber-300/80">
               <Sparkles size={11} />
               Thinking mode unavailable, retried without it
+            </span>
+          </div>
+        )}
+
+        {!isUser && message.interrupted && (
+          <div className="mb-2">
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/15 bg-amber-500/7 px-3 py-1.5 text-[11px] font-medium text-amber-300/80">
+              <AlertTriangle size={11} />
+              Cut off when Orbit closed. Send again to retry.
             </span>
           </div>
         )}

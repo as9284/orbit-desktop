@@ -591,6 +591,79 @@ function parseMeetingArtifacts(
   }
 }
 
+// ── Chat session titles ──────────────────────────────────────────────────────
+
+export const CHAT_TITLE_MAX_LENGTH = 48;
+
+/** Placeholder shown immediately, and the fallback if the AI call fails. */
+export function fallbackChatTitle(firstUserMessage: string): string {
+  const flat = firstUserMessage.replace(/\s+/g, " ").trim();
+  if (!flat) return "New chat";
+  if (flat.length <= CHAT_TITLE_MAX_LENGTH) return flat;
+  const cut = flat.slice(0, CHAT_TITLE_MAX_LENGTH);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > 20 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+/**
+ * Names a chat from its opening exchange, using the model's fastest advertised
+ * effort like the other non-generative passes. Returns null on any failure so
+ * the caller keeps the placeholder title rather than showing an error.
+ */
+export async function generateChatTitle(
+  firstUserMessage: string,
+  firstAssistantReply: string,
+): Promise<string | null> {
+  const user = firstUserMessage.replace(/\s+/g, " ").trim().slice(0, 1000);
+  if (!user) return null;
+  const assistant = firstAssistantReply
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1000);
+
+  const prompt = [
+    "Name this Orbit chat so its owner can recognize it in a list later.",
+    "",
+    "Rules:",
+    `1. At most ${CHAT_TITLE_MAX_LENGTH} characters.`,
+    "2. Name the subject, not the act of asking. Write \"Q3 launch checklist\", never \"User asks about the Q3 launch\".",
+    "3. Sentence case. No trailing punctuation, no quotation marks, no emoji.",
+    "4. Use the user's own vocabulary where it is specific.",
+    "5. Return only the JSON required by the response schema.",
+    "",
+    `USER:\n${user}`,
+    ...(assistant ? ["", `ASSISTANT:\n${assistant}`] : []),
+  ].join("\n");
+
+  const result = await requestAiText(prompt, 120, {
+    priority: "background",
+    label: "Naming chat",
+    reasoningMode: "fastest",
+    outputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { title: { type: "string" } },
+      required: ["title"],
+    },
+  });
+
+  if (!result.text) return null;
+
+  let title = result.text.trim();
+  try {
+    const parsed = JSON.parse(title) as { title?: unknown };
+    if (typeof parsed.title === "string") title = parsed.title;
+  } catch {
+    /* A model that ignored the schema and returned bare text is still usable. */
+  }
+
+  title = title.replace(/\s+/g, " ").trim().replace(/^["'«]|["'».]+$/g, "").trim();
+  if (!title) return null;
+  return title.length > CHAT_TITLE_MAX_LENGTH
+    ? fallbackChatTitle(title)
+    : title;
+}
+
 // ── Categorization ───────────────────────────────────────────────────────────
 
 async function categorizeBatch(

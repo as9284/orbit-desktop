@@ -100,10 +100,58 @@ export interface LunaChatMessage {
   content: string;
 }
 
-export const ORBIT_DATA_VERSION = 1;
+/** Mirrors `ToolResult` in lib/luna-tool-batch, which is the runtime source. */
+export interface LunaToolResult {
+  tool: string;
+  status: "pending" | "success" | "error";
+  label: string;
+  subject?: string;
+}
+
+/** Mirrors `CacheInfo` in lib/ai-client. */
+export interface LunaCacheInfo {
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+}
+
+/** One rendered turn in a chat session. Persisted, so keep it serializable. */
+export interface LunaMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  reasoning?: string;
+  thinkingFallback?: boolean;
+  /** True only while a turn is streaming into this message. Never persisted as true. */
+  pending?: boolean;
+  /** Set when a turn was cut short by an app restart rather than finishing. */
+  interrupted?: boolean;
+  toolResults?: LunaToolResult[];
+  cacheInfo?: LunaCacheInfo;
+}
+
+export interface LunaChatSession {
+  id: string;
+  title: string;
+  /** False until the title has been generated from the conversation. */
+  titleGenerated: boolean;
+  createdAt: string;
+  updatedAt: string;
+  messages: LunaMessage[];
+  /**
+   * The assistant message a turn is currently streaming into. Cleared when the
+   * turn settles, so a value still here at load time means the app closed
+   * mid-turn and that message is incomplete.
+   */
+  activeTurnMessageId?: string | null;
+}
+
+export const ORBIT_DATA_VERSION = 2;
+
+/** Bundle versions this build can still import. */
+export const ORBIT_DATA_SUPPORTED_VERSIONS = [1, 2] as const;
 
 export interface OrbitDataBundle {
-  version: typeof ORBIT_DATA_VERSION;
+  version: number;
   exportedAt: string;
   profile: LocalProfile;
   tasks: Task[];
@@ -115,7 +163,8 @@ export interface OrbitDataBundle {
     tasks: Record<string, string>;
     notes: Record<string, string>;
   };
-  lunaChat: unknown[];
+  /** Absent in version 1 bundles, which carried a single flat `lunaChat`. */
+  lunaSessions?: LunaChatSession[];
   preferences: {
     dashboard: DashboardPreferences;
     ai: unknown;

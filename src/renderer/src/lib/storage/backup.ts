@@ -1,5 +1,6 @@
 import {
   ORBIT_DATA_VERSION,
+  ORBIT_DATA_SUPPORTED_VERSIONS,
   type OrbitDataBundle,
   type Task,
   type SubTask,
@@ -17,7 +18,7 @@ import {
   getMeetingState,
   getTaskCategories,
   getNoteCategories,
-  getLunaChat,
+  getLunaSessions,
   getDashboardPreferences,
   putTasks,
   putSubTasks,
@@ -26,7 +27,7 @@ import {
   setMeetingState,
   setTaskCategories,
   setNoteCategories,
-  setLunaChat,
+  putLunaSession,
   setDashboardPreferences,
   clearAllStores,
 } from "./db";
@@ -53,11 +54,11 @@ export async function exportAllData(): Promise<OrbitDataBundle> {
     getMeetingState(),
   ]);
 
-  const [taskCategories, noteCategories, lunaChat, dashboardPrefs] =
+  const [taskCategories, noteCategories, lunaSessions, dashboardPrefs] =
     await Promise.all([
       getTaskCategories(),
       getNoteCategories(),
-      getLunaChat(),
+      getLunaSessions(),
       getDashboardPreferences(),
     ]);
 
@@ -71,7 +72,7 @@ export async function exportAllData(): Promise<OrbitDataBundle> {
     projects,
     meetings,
     categories: { tasks: taskCategories, notes: noteCategories },
-    lunaChat,
+    lunaSessions,
     preferences: {
       dashboard: dashboardPrefs,
       ai: getAiSettings(),
@@ -96,7 +97,9 @@ function isValidBundle(data: unknown): data is OrbitDataBundle {
   if (!data || typeof data !== "object") return false;
   const b = data as Partial<OrbitDataBundle>;
   return (
-    b.version === ORBIT_DATA_VERSION &&
+    ORBIT_DATA_SUPPORTED_VERSIONS.includes(
+      b.version as (typeof ORBIT_DATA_SUPPORTED_VERSIONS)[number],
+    ) &&
     typeof b.exportedAt === "string" &&
     b.profile !== undefined &&
     Array.isArray(b.tasks) &&
@@ -176,7 +179,7 @@ export async function importData(
     setMeetingState(bundle.meetings),
     setTaskCategories(bundle.categories?.tasks ?? {}),
     setNoteCategories(bundle.categories?.notes ?? {}),
-    setLunaChat(bundle.lunaChat ?? []),
+    ...(bundle.lunaSessions ?? []).map((session) => putLunaSession(session)),
     bundle.preferences?.dashboard
       ? setDashboardPreferences(bundle.preferences.dashboard)
       : Promise.resolve(),
@@ -195,6 +198,7 @@ export async function importData(
     window.dispatchEvent(new Event("orbit:ai:changed"));
   }
 
+  window.dispatchEvent(new Event("orbit:luna-sessions:changed"));
   window.dispatchEvent(new Event("orbit:data:changed"));
 
   return {
@@ -210,5 +214,6 @@ export async function clearAllData(): Promise<void> {
   await clearAllStores();
   clearOrbitBrowserStorage();
   window.dispatchEvent(new Event("orbit:profile:changed"));
+  window.dispatchEvent(new Event("orbit:luna-sessions:changed"));
   window.dispatchEvent(new Event("orbit:data:changed"));
 }

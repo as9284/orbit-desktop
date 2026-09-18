@@ -6,6 +6,7 @@ import type {
   Project,
   MeetingState,
   DashboardPreferences,
+  LunaChatSession,
 } from "../../types/orbit";
 
 interface MetaRow {
@@ -19,25 +20,38 @@ interface OrbitDB extends DBSchema {
   notes: { key: string; value: Note };
   projects: { key: string; value: Project };
   meta: { key: string; value: MetaRow };
+  lunaSessions: { key: string; value: LunaChatSession };
 }
 
 const DB_NAME = "orbit";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBPDatabase<OrbitDB>> | null = null;
 
 function getDb(): Promise<IDBPDatabase<OrbitDB>> {
   if (!dbPromise) {
     dbPromise = openDB<OrbitDB>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
-        db.createObjectStore("tasks", { keyPath: "id" });
+      upgrade(db, oldVersion, _newVersion, tx) {
+        if (oldVersion < 1) {
+          db.createObjectStore("tasks", { keyPath: "id" });
 
-        const subTasks = db.createObjectStore("subTasks", { keyPath: "id" });
-        subTasks.createIndex("by-task", "task_id");
+          const subTasks = db.createObjectStore("subTasks", { keyPath: "id" });
+          subTasks.createIndex("by-task", "task_id");
 
-        db.createObjectStore("notes", { keyPath: "id" });
-        db.createObjectStore("projects", { keyPath: "id" });
-        db.createObjectStore("meta", { keyPath: "key" });
+          db.createObjectStore("notes", { keyPath: "id" });
+          db.createObjectStore("projects", { keyPath: "id" });
+          db.createObjectStore("meta", { keyPath: "key" });
+        }
+
+        if (oldVersion < 2) {
+          // Luna chats move from one flat `luna-chat` meta row to a store of
+          // sessions, so a write touches one chat instead of rewriting all of
+          // them. The single pre-session conversation is dropped deliberately.
+          db.createObjectStore("lunaSessions", { keyPath: "id" });
+          if (db.objectStoreNames.contains("meta")) {
+            void tx.objectStore("meta").delete("luna-chat");
+          }
+        }
       },
     });
   }
@@ -209,12 +223,23 @@ export async function setMeetingState(state: MeetingState): Promise<void> {
   await setMeta("meetings", state);
 }
 
-export async function getLunaChat(): Promise<unknown[]> {
-  return getMeta<unknown[]>("luna-chat", []);
+// ── Luna chat sessions ──────────────────────────────────────────────────────
+
+/** Newest first, by last activity. */
+export async function getLunaSessions(): Promise<LunaChatSession[]> {
+  const db = await getDb();
+  const sessions = await db.getAll("lunaSessions");
+  return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-export async function setLunaChat(messages: unknown[]): Promise<void> {
-  await setMeta("luna-chat", messages);
+export async function putLunaSession(session: LunaChatSession): Promise<void> {
+  const db = await getDb();
+  await db.put("lunaSessions", session);
+}
+
+export async function deleteLunaSession(id: string): Promise<void> {
+  const db = await getDb();
+  await db.delete("lunaSessions", id);
 }
 
 export async function getDashboardPreferences(): Promise<DashboardPreferences> {
@@ -236,7 +261,7 @@ export async function setDashboardPreferences(
 export async function clearAllStores(): Promise<void> {
   const db = await getDb();
   const tx = db.transaction(
-    ["tasks", "subTasks", "notes", "projects", "meta"],
+    ["tasks", "subTasks", "notes", "projects", "meta", "lunaSessions"],
     "readwrite",
   );
   await Promise.all([
@@ -245,6 +270,7 @@ export async function clearAllStores(): Promise<void> {
     tx.objectStore("notes").clear(),
     tx.objectStore("projects").clear(),
     tx.objectStore("meta").clear(),
+    tx.objectStore("lunaSessions").clear(),
     tx.done,
   ]);
 }

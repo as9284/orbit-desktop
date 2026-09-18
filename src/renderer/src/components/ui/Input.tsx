@@ -1,10 +1,12 @@
-import type { InputHTMLAttributes } from "react";
+import type { InputHTMLAttributes, Ref } from "react";
 import { cn } from "../../lib/cn";
 
 interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   hasError?: boolean;
   /** `default` = boxed field; `bare` = transparent underline (modal titles). */
   variant?: "default" | "bare";
+  /** React 19 passes `ref` as a plain prop, so it just needs declaring. */
+  ref?: Ref<HTMLInputElement>;
 }
 
 const boxed =
