@@ -3,6 +3,7 @@ import {
   getFastestReasoningEffort,
   mapCodexModel,
   resolveModelSelection,
+  ORBIT_DEFAULT_MODEL_ID,
 } from "./ai-models";
 import type { CodexModel } from "../../../shared/contracts";
 
@@ -46,6 +47,34 @@ describe("Codex model settings", () => {
       model: "gpt-example",
       effort: "medium",
     });
+  });
+
+  it("prefers Orbit's default model over the one Codex marks as default", () => {
+    const astra = mapCodexModel({
+      ...model,
+      id: "gpt-6-astra",
+      model: "gpt-6-astra",
+      displayName: "GPT-6-Astra",
+      isDefault: true,
+    });
+    const luna = mapCodexModel({
+      ...model,
+      id: ORBIT_DEFAULT_MODEL_ID,
+      model: ORBIT_DEFAULT_MODEL_ID,
+      displayName: "GPT-5.6-Luna",
+      isDefault: false,
+    });
+
+    // No saved choice yet: Orbit's preference wins over Codex's isDefault.
+    expect(resolveModelSelection([astra, luna], "", "").model).toBe(
+      ORBIT_DEFAULT_MODEL_ID,
+    );
+    // A saved choice always wins over both.
+    expect(resolveModelSelection([astra, luna], "gpt-6-astra", "").model).toBe(
+      "gpt-6-astra",
+    );
+    // Preference missing from the live catalog falls back to Codex's default.
+    expect(resolveModelSelection([astra], "", "").model).toBe("gpt-6-astra");
   });
 
   it("uses none when advertised and otherwise selects the lowest supported effort", () => {

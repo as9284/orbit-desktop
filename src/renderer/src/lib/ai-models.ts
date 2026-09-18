@@ -42,12 +42,20 @@ export function mapCodexModel(model: CodexModel): ModelConfig {
   };
 }
 
+/**
+ * Orbit's own preferred default, which deliberately overrides whichever model
+ * Codex marks `isDefault` (currently gpt-6-astra). A saved user choice still
+ * wins, and if this id is not in the live catalog the Codex default is used.
+ */
+export const ORBIT_DEFAULT_MODEL_ID = "gpt-5.6-luna";
+
 export function resolveModelSelection(
   models: ModelConfig[],
   currentModel: string,
   currentEffort: string,
 ): { model: string; effort: string } {
   const selected = models.find((model) => model.id === currentModel)
+    ?? models.find((model) => model.id === ORBIT_DEFAULT_MODEL_ID)
     ?? models.find((model) => model.recommended)
     ?? models[0];
 
