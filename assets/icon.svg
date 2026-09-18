@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!--
+    Orbit app mark. Transparent and edge-to-edge on purpose: Windows draws
+    taskbar and Alt-Tab icons straight onto its own surface, so a dark tile
+    turns into an unreadable blob there. The stroke is mid-violet rather
+    than white so the ring keeps contrast on light backgrounds too.
+  -->
+  <defs>
+    <linearGradient id="ring" x1="64" y1="112" x2="448" y2="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8E7DFF" />
+      <stop offset="0.5" stop-color="#6D5AF0" />
+      <stop offset="1" stop-color="#4B39C9" />
+    </linearGradient>
+
+    <!-- Saturated rim on the core and the bead so both keep a defined edge
+         against a light taskbar, not just a glow against a dark one. -->
+    <radialGradient id="core" cx="0.38" cy="0.34" r="0.62">
+      <stop offset="0" stop-color="#FFFFFF" />
+      <stop offset="0.30" stop-color="#E4DFFF" />
+      <stop offset="0.72" stop-color="#9C8BFF" />
+      <stop offset="1" stop-color="#5B45E0" />
+    </radialGradient>
+
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#7C68FF" stop-opacity="0.55" />
+      <stop offset="0.6" stop-color="#7C68FF" stop-opacity="0.16" />
+      <stop offset="1" stop-color="#7C68FF" stop-opacity="0" />
+    </radialGradient>
+
+    <radialGradient id="bead" cx="0.36" cy="0.32" r="0.64">
+      <stop offset="0" stop-color="#FFFFFF" />
+      <stop offset="0.40" stop-color="#D5CCFF" />
+      <stop offset="1" stop-color="#5B45E0" />
+    </radialGradient>
+  </defs>
+
+  <circle cx="256" cy="256" r="196" fill="url(#halo)" />
+
+  <!-- Back of the orbit, then the planet, then the near arc drawn over it,
+       so the ring reads as passing around the core rather than through it. -->
+  <ellipse cx="256" cy="256" rx="238" ry="110" transform="rotate(-28 256 256)"
+           fill="none" stroke="url(#ring)" stroke-width="38" />
+
+  <circle cx="256" cy="256" r="90" fill="url(#core)" />
+
+  <path d="M 466.1 143.4 A 238 110 -28 0 1 45.9 368.6"
+        fill="none" stroke="url(#ring)" stroke-width="38" />
+
+  <circle cx="466" cy="143" r="37" fill="url(#bead)" />
+</svg>
